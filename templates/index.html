@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Altium Library Merger | Conflict-Free .SchLib & .PcbLib Collaboration</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-content">
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="2" width="20" height="20" rx="4" />
+                        <circle cx="7" cy="7" r="1.5" />
+                        <circle cx="17" cy="7" r="1.5" />
+                        <circle cx="7" cy="17" r="1.5" />
+                        <circle cx="17" cy="17" r="1.5" />
+                        <path d="M7 8.5v7M8.5 7h7M15.5 17h-7M17 8.5v7" stroke-dasharray="1 1" />
+                        <path d="M12 9v6M9 12h6" />
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="brand-title">Altium Library Merger</h1>
+                    <p class="brand-subtitle">Clean, conflict-free collaborative merging for <code>.SchLib</code> and <code>.PcbLib</code></p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="btnGitGuide" class="btn btn-secondary btn-sm" title="Git Integration Guide">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M3 12h6m6 0h6"/>
+                        <circle cx="18" cy="6" r="3"/>
+                        <path d="M18 9v9"/>
+                    </svg>
+                    Git Merge Driver
+                </button>
+                <button id="btnSampleDemo" class="btn btn-primary-soft btn-sm" title="Load Demo Libraries">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                    Load Sample Demo
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="app-main">
+        <!-- STEP 1: Upload / File Selection -->
+        <section class="card upload-section">
+            <div class="section-header">
+                <div>
+                    <h2>1. Select Libraries to Merge</h2>
+                    <p class="text-muted">Upload your current library branch and your coworker's incoming branch.</p>
+                </div>
+                <div class="sample-pills">
+                    <span class="text-muted text-xs">Quick demo:</span>
+                    <button class="pill-btn active" id="pillDemoSch">Schematic (.SchLib)</button>
+                    <button class="pill-btn" id="pillDemoPcb">Footprints (.PcbLib)</button>
+                </div>
+            </div>
+
+            <div class="dual-dropzones">
+                <!-- Dropzone A (Mine) -->
+                <div class="dropzone" id="dropzoneA" data-target="fileA">
+                    <input type="file" id="fileInputA" accept=".SchLib,.schlib,.PcbLib,.pcblib" hidden>
+                    <div class="dropzone-badge mine-badge">Library A &bull; Mine / Current</div>
+                    <div class="dropzone-icon">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="12" y1="18" x2="12" y2="12"/>
+                            <polyline points="9 15 12 12 15 15"/>
+                        </svg>
+                    </div>
+                    <div class="dropzone-text">
+                        <span class="dropzone-title" id="titleA">Drag & Drop Library A</span>
+                        <span class="dropzone-hint" id="hintA">or click to browse (.SchLib / .PcbLib)</span>
+                    </div>
+                    <div class="file-chip hidden" id="chipA">
+                        <span class="chip-name">filename.SchLib</span>
+                        <span class="chip-size">140 KB</span>
+                    </div>
+                </div>
+
+                <!-- Dropzone B (Theirs) -->
+                <div class="dropzone" id="dropzoneB" data-target="fileB">
+                    <input type="file" id="fileInputB" accept=".SchLib,.schlib,.PcbLib,.pcblib" hidden>
+                    <div class="dropzone-badge theirs-badge">Library B &bull; Coworker / Incoming</div>
+                    <div class="dropzone-icon">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="12" y1="18" x2="12" y2="12"/>
+                            <polyline points="9 15 12 12 15 15"/>
+                        </svg>
+                    </div>
+                    <div class="dropzone-text">
+                        <span class="dropzone-title" id="titleB">Drag & Drop Library B</span>
+                        <span class="dropzone-hint" id="hintB">or click to browse (.SchLib / .PcbLib)</span>
+                    </div>
+                    <div class="file-chip hidden" id="chipB">
+                        <span class="chip-name">filename.SchLib</span>
+                        <span class="chip-size">140 KB</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="upload-actions">
+                <button id="btnSwap" class="btn btn-secondary btn-lg" type="button" title="Swap Library A and Library B order">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4"/>
+                    </svg>
+                    Swap Order (A ⇄ B)
+                </button>
+                <button id="btnCompare" class="btn btn-primary btn-lg" disabled>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="18" cy="18" r="3"/>
+                        <circle cx="6" cy="6" r="3"/>
+                        <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
+                        <line x1="6" y1="9" x2="6" y2="21"/>
+                    </svg>
+                    Compare & Inspect Libraries
+                </button>
+            </div>
+        </section>
+
+        <!-- STEP 2: Diff Dashboard (Hidden until compared) -->
+        <section class="card diff-section hidden" id="diffSection">
+            <div class="section-header">
+                <div>
+                    <h2>2. Review Diffs & Resolve Conflicts</h2>
+                    <p class="text-muted" id="diffSubtitle">Comparing components between Library A and Library B.</p>
+                </div>
+                <div class="library-type-tag" id="libTypeTag">Schematic Library (.SchLib)</div>
+            </div>
+
+            <!-- Metric Cards -->
+            <div class="metrics-grid">
+                <div class="metric-card metric-total">
+                    <span class="metric-label">Total Unique Items</span>
+                    <span class="metric-value" id="valTotal">0</span>
+                </div>
+                <div class="metric-card metric-mine">
+                    <span class="metric-label">Added in A (Mine)</span>
+                    <span class="metric-value" id="valAddedA">0</span>
+                    <span class="metric-hint">Unique to your branch</span>
+                </div>
+                <div class="metric-card metric-theirs">
+                    <span class="metric-label">Added in B (Theirs)</span>
+                    <span class="metric-value" id="valAddedB">0</span>
+                    <span class="metric-hint">Coworker additions</span>
+                </div>
+                <div class="metric-card metric-conflicts">
+                    <span class="metric-label">Conflicts / Modified</span>
+                    <span class="metric-value" id="valConflicts">0</span>
+                    <span class="metric-hint">Requires resolution</span>
+                </div>
+                <div class="metric-card metric-identical">
+                    <span class="metric-label">Identical</span>
+                    <span class="metric-value" id="valIdentical">0</span>
+                    <span class="metric-hint">Byte-for-byte match</span>
+                </div>
+            </div>
+
+            <!-- Batch Actions Toolbar -->
+            <div class="batch-toolbar">
+                <div class="batch-title">Quick Batch Actions:</div>
+                <div class="batch-buttons">
+                    <button id="btnBatchKeepA" class="btn btn-outline btn-xs" title="Use your version for all conflicts">
+                        Prefer Mine (All A)
+                    </button>
+                    <button id="btnBatchKeepB" class="btn btn-outline btn-xs" title="Use coworker version for all conflicts">
+                        Prefer Theirs (All B)
+                    </button>
+                    <button id="btnBatchKeepBoth" class="btn btn-outline btn-xs" title="Keep both copies by auto-renaming B">
+                        Keep Both (Auto-Rename B)
+                    </button>
+                    <button id="btnBatchReset" class="btn btn-ghost btn-xs">Reset Decisions</button>
+                </div>
+            </div>
+
+            <!-- Filter & Search Toolbar -->
+            <div class="filter-toolbar">
+                <div class="filter-tabs">
+                    <button class="filter-tab active" data-filter="all">All Items (<span id="tabCountAll">0</span>)</button>
+                    <button class="filter-tab tab-conflict" data-filter="conflict">Conflicts (<span id="tabCountConflict">0</span>)</button>
+                    <button class="filter-tab tab-added-a" data-filter="added_a">Only in A (<span id="tabCountAddedA">0</span>)</button>
+                    <button class="filter-tab tab-added-b" data-filter="added_b">Only in B (<span id="tabCountAddedB">0</span>)</button>
+                    <button class="filter-tab tab-identical" data-filter="identical">Identical (<span id="tabCountIdentical">0</span>)</button>
+                </div>
+                <div class="search-box">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"/>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <input type="text" id="searchInput" placeholder="Search by name, description, designator...">
+                </div>
+            </div>
+
+            <!-- Component Table / List -->
+            <div class="components-table-wrapper">
+                <table class="components-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 130px;">Status</th>
+                            <th>Component Name</th>
+                            <th>Details & Properties</th>
+                            <th style="width: 280px;">Merge Resolution</th>
+                            <th style="width: 100px; text-align: right;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="componentsTbody">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+                <div class="empty-state hidden" id="emptyState">
+                    <p>No components match the current filter.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- STEP 3: Merge & Download Bar (Hidden until compared) -->
+        <section class="card merge-section hidden" id="mergeSection">
+            <div class="merge-bar-content">
+                <div class="output-naming">
+                    <label for="outputFilename">Output Filename:</label>
+                    <input type="text" id="outputFilename" value="Merged_Library.SchLib">
+                </div>
+                <div class="merge-summary-stats" id="mergeStatusPill">
+                    <span class="badge badge-success">&#10003; Ready to merge</span>
+                </div>
+                <button id="btnExecuteMerge" class="btn btn-success btn-lg">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                        <polyline points="17 21 17 13 7 13 7 21"/>
+                        <polyline points="7 3 7 8 15 8"/>
+                    </svg>
+                    Generate Merged Library
+                </button>
+            </div>
+
+            <!-- Download Banner (reveals on successful merge) -->
+            <div class="download-banner hidden" id="downloadBanner">
+                <div class="download-banner-text">
+                    <div class="download-title">&#127881; Merged Library Generated Successfully!</div>
+                    <div class="download-desc" id="downloadMetrics">Total components: 85 | Added from A: 4 | Added from B: 5 | Conflicts resolved: 1</div>
+                </div>
+                <a id="btnDownload" href="#" class="btn btn-primary btn-lg" download>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Download Merged Library
+                </a>
+            </div>
+        </section>
+    </main>
+
+    <!-- Side-by-Side Component Comparison Modal -->
+    <dialog class="modal" id="diffModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title" id="modalTitle">Component Comparison</h3>
+                    <span class="badge" id="modalBadge">Conflict</span>
+                </div>
+                <button class="modal-close" id="btnModalClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="comparison-grid">
+                    <div class="comparison-col col-mine">
+                        <div class="col-header">
+                            <span class="col-title">Library A (Mine)</span>
+                            <span class="file-name" id="modalFileA">LibA.SchLib</span>
+                        </div>
+                        <div class="col-props" id="propsColA"></div>
+                    </div>
+                    <div class="comparison-col col-theirs">
+                        <div class="col-header">
+                            <span class="col-title">Library B (Theirs)</span>
+                            <span class="file-name" id="modalFileB">LibB.SchLib</span>
+                        </div>
+                        <div class="col-props" id="propsColB"></div>
+                    </div>
+                </div>
+
+                <!-- Parameters Diff Table -->
+                <div class="modal-section-title">User Parameters & Attributes</div>
+                <table class="params-table">
+                    <thead>
+                        <tr>
+                            <th>Parameter Name</th>
+                            <th>Value in [A] (Mine)</th>
+                            <th>Value in [B] (Theirs)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="modalParamsTbody"></tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <span class="text-muted text-xs">Choose resolution:</span>
+                <button class="btn btn-outline btn-sm" id="modalBtnKeepA">Keep Mine (A)</button>
+                <button class="btn btn-outline btn-sm" id="modalBtnKeepB">Keep Theirs (B)</button>
+                <button class="btn btn-outline btn-sm" id="modalBtnKeepBoth">Keep Both</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Git Merge Driver Instructions Modal -->
+    <dialog class="modal" id="gitModal">
+        <div class="modal-content modal-content-wide">
+            <div class="modal-header">
+                <h3 class="modal-title">Git Merge Driver Integration</h3>
+                <button class="modal-close" id="btnGitModalClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Altium Designer stores libraries as binary OLE compound files. When coworkers merge Git branches, Git's default behavior is to treat libraries as raw binaries, triggering conflicts that corrupt the file with Git conflict markers.</p>
+                <p>You can configure Git to automatically use this Altium Merge Driver with <strong>a single command</strong>:</p>
+
+                <div class="code-block">
+                    <code>python altium_merge_cli.py git-install</code>
+                    <button class="btn-copy" onclick="navigator.clipboard.writeText('python altium_merge_cli.py git-install')">Copy</button>
+                </div>
+
+                <h4>What this command does:</h4>
+                <ol class="git-steps-list">
+                    <li>Registers a custom Git merge driver in your repository config (<code>merge.altiumlib.driver</code>).</li>
+                    <li>Updates your <code>.gitattributes</code> to automatically route all <code>*.SchLib</code> and <code>*.PcbLib</code> merges through the merger.</li>
+                    <li>Whenever coworkers run <code>git merge</code> or <code>git pull</code>, unique additions from both coworkers are merged cleanly and conflicting parts are preserved without data loss!</li>
+                </ol>
+
+                <h4>Manual CLI Commands:</h4>
+                <p>You can also diff and merge directly from your terminal or CI/CD pipelines:</p>
+                <div class="code-block">
+                    <code># Compare two libraries:
+python altium_merge_cli.py diff CompanyLib_v1.SchLib CompanyLib_v2.SchLib
+
+# Merge two libraries:
+python altium_merge_cli.py merge LibA.SchLib LibB.SchLib -o Lib_Merged.SchLib --prefer-mine</code>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary btn-sm" id="btnGitModalDone">Got it</button>
+            </div>
+        </div>
+    </dialog>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

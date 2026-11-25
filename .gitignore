@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Virtual Environments
+venv/
+env/
+.venv/
+ENV/
+
+# Application runtime uploads and outputs
+temp_work/
+tests/out_test/
+*.tmp
+*.log
+
+# OS generated
+.DS_Store
+Thumbs.db
+Desktop.ini
