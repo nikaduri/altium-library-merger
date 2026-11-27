@@ -477,3 +477,153 @@ class LibraryDiffEngine:
             "metadata_a": clean_metadata(meta_a),
             "metadata_b": clean_metadata(meta_b),
         }
+
+    @classmethod
+    def plan_three_way_merge(
+        cls,
+        base_path: Optional[str],
+        ours_path: str,
+        theirs_path: str,
+    ) -> Dict[str, Any]:
+        """Compute a Git-style 3-way merge plan using a common ancestor (base).
+
+        Returns:
+            {
+                "library_type": "SchLib" | "PcbLib",
+                "resolutions": dict ready for SchLibMerger.merge / PcbLibMerger.merge,
+                "conflicts": list of true conflict dicts (name, reason, property_diffs),
+                "summary": dict of counts (added_ours, added_theirs, updated_ours,
+                           updated_theirs, deleted_ours, deleted_theirs, identical, conflicts),
+            }
+        """
+        type_ours = cls.detect_library_type(ours_path)
+        type_theirs = cls.detect_library_type(theirs_path)
+        if type_ours != type_theirs:
+            raise ValueError(f"Cannot merge different library types: {type_ours} vs {type_theirs}")
+
+        lib_type = type_ours
+        if lib_type == "SchLib":
+            loader = SchLibMerger.load_library
+        elif lib_type == "PcbLib":
+            loader = PcbLibMerger.load_library
+        else:
+            raise ValueError(f"Unsupported Altium library format: {lib_type}")
+
+        _, items_ours, meta_ours = loader(ours_path)
+        _, items_theirs, meta_theirs = loader(theirs_path)
+
+        items_base: Dict[str, Any] = {}
+        meta_base: Dict[str, Any] = {}
+        if base_path and os.path.exists(base_path) and os.path.getsize(base_path) > 0:
+            type_base = cls.detect_library_type(base_path)
+            if type_base == lib_type:
+                _, items_base, meta_base = loader(base_path)
+
+        def _sig(item: Any) -> Tuple[str, str, str]:
+            return (
+                item.name,
+                getattr(item, "description", ""),
+                item.content_hash,
+            )
+
+        map_base = {k.lower(): k for k in items_base.keys()}
+        map_ours = {k.lower(): k for k in items_ours.keys()}
+        map_theirs = {k.lower(): k for k in items_theirs.keys()}
+        all_keys = sorted(set(map_base.keys()) | set(map_ours.keys()) | set(map_theirs.keys()))
+
+        resolutions: Dict[str, Dict[str, Any]] = {}
+        conflicts: List[Dict[str, Any]] = []
+        summary = {
+            "added_ours": 0,
+            "added_theirs": 0,
+            "updated_ours": 0,
+            "updated_theirs": 0,
+            "deleted_ours": 0,
+            "deleted_theirs": 0,
+            "identical": 0,
+            "conflicts": 0,
+        }
+
+        for k in all_keys:
+            in_base = k in map_base
+            in_ours = k in map_ours
+            in_theirs = k in map_theirs
+
+            b_item = items_base[map_base[k]] if in_base else None
+            o_item = items_ours[map_ours[k]] if in_ours else None
+            t_item = items_theirs[map_theirs[k]] if in_theirs else None
+
+            if in_ours and in_theirs:
+                if _sig(o_item) == _sig(t_item):
+                    summary["identical"] += 1
+                    continue
+                if in_base:
+                    o_same = _sig(o_item) == _sig(b_item)
+                    t_same = _sig(t_item) == _sig(b_item)
+                    if o_same and not t_same:
+                        resolutions[o_item.name] = {"action": "keep_b"}
+                        summary["updated_theirs"] += 1
+                        continue
+                    if t_same and not o_same:
+                        resolutions[o_item.name] = {"action": "keep_a"}
+                        summary["updated_ours"] += 1
+                        continue
+                    reason = "Both branches modified component differently"
+                else:
+                    reason = "Both branches added component with different content"
+
+                # True conflict: keep ours in partial output, report conflict
+                resolutions[o_item.name] = {"action": "keep_a"}
+                cd = ComponentDiff(
+                    o_item.name, DiffStatus.CONFLICT, item_a=o_item, item_b=t_item,
+                    lib_type=lib_type, meta_a=meta_ours, meta_b=meta_theirs,
+                )
+                conflicts.append({
+                    "name": o_item.name,
+                    "reason": reason,
+                    "property_diffs": cd.property_diffs,
+                })
+                summary["conflicts"] += 1
+
+            elif in_ours and not in_theirs:
+                if in_base:
+                    if _sig(o_item) == _sig(b_item):
+                        # Cleanly deleted in theirs
+                        resolutions[o_item.name] = {"action": "skip"}
+                        summary["deleted_theirs"] += 1
+                    else:
+                        # Modified in ours, deleted in theirs -> true conflict
+                        resolutions[o_item.name] = {"action": "keep_a"}
+                        conflicts.append({
+                            "name": o_item.name,
+                            "reason": "Modified in ours, deleted in theirs",
+                            "property_diffs": [],
+                        })
+                        summary["conflicts"] += 1
+                else:
+                    summary["added_ours"] += 1
+
+            elif in_theirs and not in_ours:
+                if in_base:
+                    if _sig(t_item) == _sig(b_item):
+                        # Cleanly deleted in ours
+                        resolutions[t_item.name] = {"action": "skip"}
+                        summary["deleted_ours"] += 1
+                    else:
+                        # Deleted in ours, modified in theirs -> true conflict
+                        resolutions[t_item.name] = {"action": "keep_b"}
+                        conflicts.append({
+                            "name": t_item.name,
+                            "reason": "Deleted in ours, modified in theirs",
+                            "property_diffs": [],
+                        })
+                        summary["conflicts"] += 1
+                else:
+                    summary["added_theirs"] += 1
+
+        return {
+            "library_type": lib_type,
+            "resolutions": resolutions,
+            "conflicts": conflicts,
+            "summary": summary,
+        }

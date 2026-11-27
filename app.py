@@ -9,6 +9,7 @@ import uuid
 import logging
 from typing import Dict, Any
 from flask import Flask, render_template, request, jsonify, send_file
+from werkzeug.utils import secure_filename
 
 from altium_engine.diff_engine import LibraryDiffEngine
 from altium_engine.schlib_merger import SchLibMerger
@@ -58,8 +59,11 @@ def api_compare():
     os.makedirs(dir_a, exist_ok=True)
     os.makedirs(dir_b, exist_ok=True)
 
-    path_a = os.path.join(dir_a, file_a.filename)
-    path_b = os.path.join(dir_b, file_b.filename)
+    safe_name_a = secure_filename(os.path.basename(file_a.filename)) or "library_a.bin"
+    safe_name_b = secure_filename(os.path.basename(file_b.filename)) or "library_b.bin"
+
+    path_a = os.path.join(dir_a, safe_name_a)
+    path_b = os.path.join(dir_b, safe_name_b)
 
     file_a.save(path_a)
     file_b.save(path_b)
@@ -70,8 +74,8 @@ def api_compare():
             "session_id": session_id,
             "path_a": path_a,
             "path_b": path_b,
-            "filename_a": file_a.filename,
-            "filename_b": file_b.filename,
+            "filename_a": safe_name_a,
+            "filename_b": safe_name_b,
             "library_type": diff_data["library_type"],
             "diff_data": diff_data,
         }
@@ -111,23 +115,53 @@ def api_compare_samples():
     if sample_type == "SchLib":
         from altium_engine.cfb_handler import CompoundFileTree, parse_altium_params, build_altium_params
 
-        tree_orig = CompoundFileTree.load_from_file(base_sample)
+        def _remove_schlib_component(tree: CompoundFileTree, remove_idx: int, modify_first_descr: bool = False) -> None:
+            raw_fh = tree.get_stream(("FileHeader",))
+            if not raw_fh:
+                return
+            pairs, fh_lookup = parse_altium_params(raw_fh, has_length_prefix=True)
+            comp_count = int(fh_lookup.get("compcount", 0))
+            if comp_count <= remove_idx:
+                return
+
+            # Collect component entries
+            entries = []
+            for i in range(comp_count):
+                entries.append({
+                    "libref": fh_lookup.get(f"libref{i}", ""),
+                    "descr": fh_lookup.get(f"compdescr{i}", ""),
+                    "partcount": fh_lookup.get(f"partcount{i}", "1"),
+                })
+
+            removed = entries.pop(remove_idx)
+            removed_ref = removed["libref"]
+            if removed_ref:
+                # Delete storage streams for removed component
+                for sp in list(tree.list_streams(prefix=(removed_ref,))):
+                    tree.delete_stream(sp)
+
+            if modify_first_descr and entries:
+                entries[0]["descr"] = (entries[0]["descr"] or "Generic Part") + " [Updated in Branch B: 1% Tolerance]"
+
+            # Rebuild FileHeader without old component keys, then append updated catalog
+            import re
+            comp_key_re = re.compile(r"^(%utf8%)?(compcount|libref\d+|compdescr\d+|partcount\d+)$", re.IGNORECASE)
+            new_pairs = [(k, v) for k, v in pairs if not comp_key_re.match(k)]
+            new_pairs.append(("CompCount", str(len(entries))))
+            for idx, ent in enumerate(entries):
+                new_pairs.append((f"LibRef{idx}", ent["libref"]))
+                if ent["descr"]:
+                    new_pairs.append((f"CompDescr{idx}", ent["descr"]))
+                new_pairs.append((f"PartCount{idx}", ent["partcount"]))
+            tree.set_stream(("FileHeader",), build_altium_params(new_pairs, has_length_prefix=True))
+
         # Create Branch A: remove component #5
         tree_a = CompoundFileTree.load_from_file(base_sample)
-        # Create Branch B: remove component #10
-        tree_b = CompoundFileTree.load_from_file(base_sample)
+        _remove_schlib_component(tree_a, remove_idx=5, modify_first_descr=False)
 
-        # In Branch B, also slightly modify component #0's description to produce a realistic conflict!
-        raw_fh = tree_b.get_stream(("FileHeader",))
-        if raw_fh:
-            pairs, _ = parse_altium_params(raw_fh, has_length_prefix=True)
-            modified_pairs = []
-            for k, v in pairs:
-                if k.lower() == "compdescr0":
-                    modified_pairs.append((k, (v or "Generic Part") + " [Updated in Branch B: 1% Tolerance]"))
-                else:
-                    modified_pairs.append((k, v))
-            tree_b.set_stream(("FileHeader",), build_altium_params(modified_pairs, has_length_prefix=True))
+        # Create Branch B: remove component #10 and modify component #0's description
+        tree_b = CompoundFileTree.load_from_file(base_sample)
+        _remove_schlib_component(tree_b, remove_idx=10, modify_first_descr=True)
 
         tree_a.save_to_file(path_a)
         tree_b.save_to_file(path_b)
@@ -196,8 +230,16 @@ def api_merge():
         base_name = os.path.splitext(session["filename_a"])[0]
         ext = ".SchLib" if lib_type == "SchLib" else ".PcbLib"
         output_filename = f"{base_name}_Merged{ext}"
+    else:
+        output_filename = secure_filename(os.path.basename(output_filename))
+        if not output_filename:
+            base_name = os.path.splitext(session["filename_a"])[0]
+            ext = ".SchLib" if lib_type == "SchLib" else ".PcbLib"
+            output_filename = f"{base_name}_Merged{ext}"
 
-    output_path = os.path.join(OUTPUT_FOLDER, f"{session_id}_{output_filename}")
+    output_path = os.path.abspath(os.path.join(OUTPUT_FOLDER, f"{session_id}_{output_filename}"))
+    if not output_path.startswith(os.path.abspath(OUTPUT_FOLDER) + os.sep):
+        return jsonify({"error": "Invalid output filename."}), 400
 
     try:
         if lib_type == "SchLib":
@@ -230,11 +272,13 @@ def api_merge():
 @app.route("/api/download/<file_id>")
 def api_download(file_id):
     """Download the generated merged library file."""
-    target_path = os.path.join(OUTPUT_FOLDER, file_id)
-    if not os.path.exists(target_path):
+    safe_id = secure_filename(os.path.basename(file_id))
+    target_path = os.path.abspath(os.path.join(OUTPUT_FOLDER, safe_id))
+    if not target_path.startswith(os.path.abspath(OUTPUT_FOLDER) + os.sep) or not os.path.exists(target_path):
         return jsonify({"error": "File not found or expired."}), 404
 
-    display_name = request.args.get("name") or file_id.split("_", 1)[-1]
+    raw_display = request.args.get("name") or safe_id.split("_", 1)[-1]
+    display_name = secure_filename(os.path.basename(raw_display)) or safe_id.split("_", 1)[-1]
     return send_file(
         target_path,
         as_attachment=True,

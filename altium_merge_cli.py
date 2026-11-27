@@ -221,20 +221,13 @@ def cmd_git_merge(args: argparse.Namespace) -> int:
     # Temporary output file
     temp_output = ours_file + ".merged.tmp"
 
-    # Merge ours and theirs, writing to temp_output
+    # Merge base, ours, and theirs using 3-way merge plan
     try:
-        diff_data = LibraryDiffEngine.compare(ours_file, theirs_file)
-        lib_type = diff_data["library_type"]
-        resolutions = {}
-
-        # Default policy for automated Git merge:
-        # Keep all additions from both sides.
-        # For direct conflicts: keep ours or keep both depending on policy.
-        conflicts = [item for item in diff_data["items"] if item["status"] == DiffStatus.CONFLICT.value]
-        if conflicts:
-            print(f"[Altium-Git-Merge] {len(conflicts)} conflict(s) detected. Resolving with keep-both to prevent data loss.")
-            for c in conflicts:
-                resolutions[c["name"]] = {"action": "keep_both", "new_name": f"{c['name']}_Incoming"}
+        plan = LibraryDiffEngine.plan_three_way_merge(base_file, ours_file, theirs_file)
+        lib_type = plan["library_type"]
+        resolutions = plan["resolutions"]
+        conflicts = plan["conflicts"]
+        s = plan["summary"]
 
         if lib_type == "SchLib":
             SchLibMerger.merge(ours_file, theirs_file, temp_output, resolutions=resolutions, default_conflict="prefer_a")
@@ -249,7 +242,26 @@ def cmd_git_merge(args: argparse.Namespace) -> int:
             os.remove(ours_file)
         os.rename(temp_output, ours_file)
 
-        print(f"[Altium-Git-Merge] Successfully merged '{path_name}' cleanly!")
+        print(
+            f"[Altium-Git-Merge] Summary for '{path_name}': "
+            f"+{s['added_ours']}/+{s['added_theirs']} added, "
+            f"{s['updated_ours']}/{s['updated_theirs']} updated, "
+            f"-{s['deleted_ours']}/-{s['deleted_theirs']} deleted, "
+            f"{s['identical']} unchanged, {s['conflicts']} conflict(s)."
+        )
+
+        if conflicts:
+            print(f"{RED}[Altium-Git-Merge] CONFLICT in '{path_name}': {len(conflicts)} component(s) have true concurrent changes:{RESET}", file=sys.stderr)
+            for c in conflicts:
+                print(f"  - {c['name']}: {c['reason']}", file=sys.stderr)
+            print(
+                f"[Altium-Git-Merge] Auto-merges were applied; resolve the conflict(s) above "
+                f"(via Web UI or `altium_merge_cli.py merge ... -i`) and run `git add \"{path_name}\"`.",
+                file=sys.stderr,
+            )
+            return 1
+
+        print(f"[Altium-Git-Merge] Auto-merged '{path_name}' cleanly!")
         return 0
     except Exception as e:
         print(f"[Altium-Git-Merge] Merge failed: {e}", file=sys.stderr)

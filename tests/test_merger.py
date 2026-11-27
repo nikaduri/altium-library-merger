@@ -405,6 +405,106 @@ class TestAltiumMerger(unittest.TestCase):
         guid_diff = analyze_primitive_guids_diff(g1, g2)
         self.assertIn("1 primitive GUIDs (1 regenerated)", guid_diff)
 
+    def test_09_git_three_way_merge(self):
+        """Verify Git 3-way merge driver treats single-branch updates/deletions as clean (exit 0) and concurrent edits as conflicts (exit 1)."""
+        import subprocess
+        from altium_engine.cfb_handler import CompoundFileTree, parse_altium_params, build_altium_params
+
+        base_path = os.path.join(self.out_dir, "git3_base.SchLib")
+        ours_path = os.path.join(self.out_dir, "git3_ours.SchLib")
+        theirs_path = os.path.join(self.out_dir, "git3_theirs.SchLib")
+
+        def _edit_descr(tree, idx, new_descr):
+            raw_fh = tree.get_stream(("FileHeader",))
+            pairs, fh_lookup = parse_altium_params(raw_fh, has_length_prefix=True)
+            comp_count = int(fh_lookup.get("compcount", 0))
+            entries = [
+                {
+                    "libref": fh_lookup.get(f"libref{i}", ""),
+                    "descr": fh_lookup.get(f"compdescr{i}", ""),
+                    "partcount": fh_lookup.get(f"partcount{i}", "1"),
+                }
+                for i in range(comp_count)
+            ]
+            entries[idx]["descr"] = new_descr
+            new_pairs = [(k, v) for k, v in pairs if not any(k.lower().startswith(p) for p in ("compcount", "libref", "compdescr", "partcount"))]
+            new_pairs.append(("CompCount", str(len(entries))))
+            for i, e in enumerate(entries):
+                new_pairs.append((f"LibRef{i}", e["libref"]))
+                if e["descr"]:
+                    new_pairs.append((f"CompDescr{i}", e["descr"]))
+                new_pairs.append((f"PartCount{i}", e["partcount"]))
+            tree.set_stream(("FileHeader",), build_altium_params(new_pairs, has_length_prefix=True))
+            return entries[idx]["libref"]
+
+        def _delete_comp(tree, idx):
+            raw_fh = tree.get_stream(("FileHeader",))
+            pairs, fh_lookup = parse_altium_params(raw_fh, has_length_prefix=True)
+            comp_count = int(fh_lookup.get("compcount", 0))
+            entries = [
+                {
+                    "libref": fh_lookup.get(f"libref{i}", ""),
+                    "descr": fh_lookup.get(f"compdescr{i}", ""),
+                    "partcount": fh_lookup.get(f"partcount{i}", "1"),
+                }
+                for i in range(comp_count)
+            ]
+            removed = entries.pop(idx)
+            for sp in list(tree.list_streams(prefix=(removed["libref"],))):
+                tree.delete_stream(sp)
+            new_pairs = [(k, v) for k, v in pairs if not any(k.lower().startswith(p) for p in ("compcount", "libref", "compdescr", "partcount"))]
+            new_pairs.append(("CompCount", str(len(entries))))
+            for i, e in enumerate(entries):
+                new_pairs.append((f"LibRef{i}", e["libref"]))
+                if e["descr"]:
+                    new_pairs.append((f"CompDescr{i}", e["descr"]))
+                new_pairs.append((f"PartCount{i}", e["partcount"]))
+            tree.set_stream(("FileHeader",), build_altium_params(new_pairs, has_length_prefix=True))
+            return removed["libref"]
+
+        # 1. Clean 3-way merge: ours updates #0, theirs updates #1 and deletes #2
+        tree_base = CompoundFileTree.load_from_file(self.sample_sch)
+        tree_base.save_to_file(base_path)
+
+        tree_ours = CompoundFileTree.load_from_file(self.sample_sch)
+        name_0 = _edit_descr(tree_ours, 0, "Updated in Ours")
+        tree_ours.save_to_file(ours_path)
+
+        tree_theirs = CompoundFileTree.load_from_file(self.sample_sch)
+        name_1 = _edit_descr(tree_theirs, 1, "Updated in Theirs")
+        name_2_del = _delete_comp(tree_theirs, 2)
+        tree_theirs.save_to_file(theirs_path)
+
+        cli_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "altium_merge_cli.py"))
+        proc = subprocess.run(
+            [sys.executable, cli_path, "git-merge", base_path, ours_path, theirs_path, "sample.SchLib"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, f"Expected clean 3-way merge (exit 0), got {proc.returncode}:\n{proc.stdout}\n{proc.stderr}")
+
+        _, merged_comps, _ = SchLibMerger.load_library(ours_path)
+        self.assertEqual(merged_comps[name_0].description, "Updated in Ours")
+        self.assertEqual(merged_comps[name_1].description, "Updated in Theirs")
+        self.assertNotIn(name_2_del, merged_comps)
+
+        # 2. True concurrent conflict: both ours and theirs modify #0 differently -> exit 1
+        tree_ours2 = CompoundFileTree.load_from_file(self.sample_sch)
+        _edit_descr(tree_ours2, 0, "Concurrent Edit A")
+        tree_ours2.save_to_file(ours_path)
+
+        tree_theirs2 = CompoundFileTree.load_from_file(self.sample_sch)
+        _edit_descr(tree_theirs2, 0, "Concurrent Edit B")
+        tree_theirs2.save_to_file(theirs_path)
+
+        proc2 = subprocess.run(
+            [sys.executable, cli_path, "git-merge", base_path, ours_path, theirs_path, "sample.SchLib"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc2.returncode, 1, f"Expected conflict exit code 1, got {proc2.returncode}")
+        self.assertIn("CONFLICT", proc2.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

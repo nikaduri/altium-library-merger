@@ -315,10 +315,18 @@ class PcbLibMerger:
 
             if in_a and not in_b:
                 orig_name = map_a[k]
+                res = resolutions.get(orig_name) or resolutions.get(k) or {}
+                if res.get("action") == "skip":
+                    merge_log.append({"name": orig_name, "status": "deleted", "action": "skipped_from_a"})
+                    continue
                 merged_footprints.append((orig_name, fps_a[orig_name], tree_a))
                 merge_log.append({"name": orig_name, "status": "added_a", "action": "included_from_a"})
             elif in_b and not in_a:
                 orig_name = map_b[k]
+                res = resolutions.get(orig_name) or resolutions.get(k) or {}
+                if res.get("action") == "skip":
+                    merge_log.append({"name": orig_name, "status": "deleted", "action": "skipped_from_b"})
+                    continue
                 merged_footprints.append((orig_name, fps_b[orig_name], tree_b))
                 merge_log.append({"name": orig_name, "status": "added_b", "action": "included_from_b"})
             else:
@@ -456,23 +464,27 @@ class PcbLibMerger:
             if lkm_b.get("header"):
                 out_tree.set_stream(("Library", "LayerKindMapping", "Header"), lkm_b["header"])
 
-        # 5. Merge 3D Models
-        # Copy ALL Library/Models/* streams from both libraries
-        # First, get all model streams from tree_a
-        all_model_streams_a = [path for path in tree_a.list_streams() if path[:2] == ("Library", "Models")]
-        all_model_streams_b = [path for path in tree_b.list_streams() if path[:2] == ("Library", "Models")]
+        # 5. Merge 3D Models from both Library A and Library B
+        models_a = meta_a.get("models", [])
+        models_b = meta_b.get("models", [])
+        merged_models: List[Dict[str, Any]] = list(models_a)
+        seen_model_ids = {m["id"].lower() for m in merged_models if m.get("id")}
 
-        # For now, prefer models from tree_a (could be enhanced to merge by model ID)
-        if all_model_streams_a:
-            for stream_path in all_model_streams_a:
-                data = tree_a.get_stream(stream_path)
-                if data is not None:
-                    out_tree.set_stream(stream_path, data)
-        elif all_model_streams_b:
-            for stream_path in all_model_streams_b:
-                data = tree_b.get_stream(stream_path)
-                if data is not None:
-                    out_tree.set_stream(stream_path, data)
+        for m in models_b:
+            mid_lower = (m.get("id") or "").lower()
+            if not mid_lower or mid_lower not in seen_model_ids:
+                merged_models.append(m)
+                if mid_lower:
+                    seen_model_ids.add(mid_lower)
+
+        if merged_models:
+            out_tree.set_stream(("Library", "Models", "Header"), struct.pack("<I", len(merged_models)))
+            model_data_chunks = []
+            for idx, m in enumerate(merged_models):
+                pbytes = m.get("param_bytes") or b""
+                model_data_chunks.append(struct.pack("<I", len(pbytes)) + pbytes)
+                out_tree.set_stream(("Library", "Models", str(idx)), m.get("stream_bytes") or b"")
+            out_tree.set_stream(("Library", "Models", "Data"), b"".join(model_data_chunks))
 
         # 6. Allocate unique 31-character storage names and build SectionKeys map
         section_keys_entries: List[Tuple[str, str]] = []

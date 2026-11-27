@@ -5,6 +5,7 @@ graphic primitives, pins, parameters, models, fonts, and metadata.
 
 import hashlib
 import logging
+import re
 import struct
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -293,10 +294,18 @@ class SchLibMerger:
 
             if in_a and not in_b:
                 orig_name = map_a[k]
+                res = resolutions.get(orig_name) or resolutions.get(k) or {}
+                if res.get("action") == "skip":
+                    merge_log.append({"name": orig_name, "status": "deleted", "action": "skipped_from_a"})
+                    continue
                 merged_components.append((orig_name, comps_a[orig_name], tree_a))
                 merge_log.append({"name": orig_name, "status": "added_a", "action": "included_from_a"})
             elif in_b and not in_a:
                 orig_name = map_b[k]
+                res = resolutions.get(orig_name) or resolutions.get(k) or {}
+                if res.get("action") == "skip":
+                    merge_log.append({"name": orig_name, "status": "deleted", "action": "skipped_from_b"})
+                    continue
                 merged_components.append((orig_name, comps_b[orig_name], tree_b))
                 merge_log.append({"name": orig_name, "status": "added_b", "action": "included_from_b"})
             else:
@@ -393,7 +402,7 @@ class SchLibMerger:
             for stream_path in src_tree.list_streams(prefix=(orig_sec,)):
                 sname = stream_path[-1]
                 data = src_tree.get_stream(stream_path)
-                if data:
+                if data is not None:
                     out_tree.set_stream((sec_name, sname), data)
 
             # Then verify/fix the Header stream if it exists
@@ -429,13 +438,13 @@ class SchLibMerger:
         seen_keys: set = set()
 
         if raw_fh_base:
+            comp_key_re = re.compile(r"^(%utf8%)?(compcount|libref\d+|compdescr\d+|partcount\d+)$")
+            font_key_re = re.compile(r"^(%utf8%)?(fontidcount|fontname\d+|size\d+|bold\d+|italic\d+|underline\d+)$")
             base_pairs, _ = parse_altium_params(raw_fh_base, has_length_prefix=True)
             for k, v in base_pairs:
                 kl = k.lower()
                 # Skip component items and font items (including any %utf8% prefixed keys)
-                if any(tag in kl for tag in ("compcount", "libref", "compdescr", "partcount")):
-                    continue
-                if any(tag in kl for tag in ("fontidcount", "fontname", "size", "bold", "italic", "underline")):
+                if comp_key_re.match(kl) or font_key_re.match(kl):
                     continue
                 if kl not in seen_keys:
                     seen_keys.add(kl)
