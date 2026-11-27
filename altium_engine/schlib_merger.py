@@ -238,14 +238,17 @@ class SchLibMerger:
                         "electrical": pin_elec,
                     })
             elif rec_type == 1:  # Binary pin record
-                # Binary pin structure: designator often in first 16 bytes
+                from .binary_inspector import parse_sch_binary_pin
+
                 try:
-                    # In Altium, binary pin records store designator string block
-                    pin_des = rec_body[:8].decode("latin1", errors="replace").strip("\x00")
+                    pin = parse_sch_binary_pin(rec_body)
                     comp.pins.append({
-                        "designator": pin_des or f"Pin{len(comp.pins) + 1}",
-                        "name": "",
-                        "electrical": "Passive",
+                        "designator": pin["designator"] or f"Pin{len(comp.pins) + 1}",
+                        "name": pin["name"],
+                        "electrical": pin["electrical"],
+                        "length": pin.get("length", 0),
+                        "x": pin.get("x", 0),
+                        "y": pin.get("y", 0),
                     })
                 except Exception:
                     pass

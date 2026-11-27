@@ -4,10 +4,20 @@ Performs component-level and property-level diffing between two Altium libraries
 
 from enum import Enum
 import os
+import struct
 from typing import Dict, List, Optional, Tuple, Any, Union
 
+from .cfb_handler import parse_altium_params
 from .schlib_merger import SchLibMerger, SchComponentInfo
 from .pcblib_merger import PcbLibMerger, PcbFootprintInfo
+from .binary_inspector import (
+    analyze_sch_data_diff,
+    analyze_sch_pin_sidecar_diff,
+    analyze_pcb_data_diff,
+    analyze_pcb_widestrings_diff,
+    analyze_uid_data_diff,
+    analyze_primitive_guids_diff,
+)
 
 
 class DiffStatus(str, Enum):
@@ -26,11 +36,17 @@ class ComponentDiff:
         status: DiffStatus,
         item_a: Optional[Union[SchComponentInfo, PcbFootprintInfo]] = None,
         item_b: Optional[Union[SchComponentInfo, PcbFootprintInfo]] = None,
+        lib_type: str = "",
+        meta_a: Optional[Dict[str, Any]] = None,
+        meta_b: Optional[Dict[str, Any]] = None,
     ):
         self.name: str = name
         self.status: DiffStatus = status
         self.item_a = item_a
         self.item_b = item_b
+        self.lib_type: str = lib_type
+        self.meta_a: Optional[Dict[str, Any]] = meta_a
+        self.meta_b: Optional[Dict[str, Any]] = meta_b
         self.property_diffs: List[Dict[str, Any]] = []
         self._compute_diffs()
 
@@ -131,41 +147,51 @@ class ComponentDiff:
                 "type": "count",
             })
 
-        # Compare raw streams to identify binary-level differences
+        # Compare raw streams to identify semantic and binary differences
         streams_a = getattr(self.item_a, "raw_streams", {})
         streams_b = getattr(self.item_b, "raw_streams", {})
         all_stream_names = sorted(list(set(streams_a.keys()) | set(streams_b.keys())))
 
-        differing_streams = []
         stream_details = []
+        stream_extra_diffs: List[Dict[str, Any]] = []
 
         for stream_name in all_stream_names:
             data_a = streams_a.get(stream_name)
             data_b = streams_b.get(stream_name)
 
             if data_a != data_b:
-                differing_streams.append(stream_name)
                 size_a = len(data_a) if data_a else 0
                 size_b = len(data_b) if data_b else 0
 
                 # Analyze what's different in this specific stream
-                diff_detail = self._analyze_stream_difference(stream_name, data_a, data_b)
+                diff_detail, extra_diffs = self._analyze_stream_difference(stream_name, data_a, data_b)
                 stream_details.append({
                     "stream": stream_name,
                     "size_a": size_a,
                     "size_b": size_b,
-                    "analysis": diff_detail
+                    "analysis": diff_detail,
                 })
+                stream_extra_diffs.extend(extra_diffs)
 
-        # Add detailed information for each differing stream
-        if differing_streams:
-            for detail in stream_details:
+        # Add detailed information for each differing stream plus decoded sub-items
+        for detail in stream_details:
+            self.property_diffs.append({
+                "property": f"Stream: {detail['stream']}",
+                "val_a": f"{detail['size_a']} bytes",
+                "val_b": f"{detail['size_b']} bytes",
+                "type": "binary_stream",
+                "details": detail["analysis"],
+            })
+
+        if stream_extra_diffs:
+            max_items = 25
+            self.property_diffs.extend(stream_extra_diffs[:max_items])
+            if len(stream_extra_diffs) > max_items:
                 self.property_diffs.append({
-                    "property": f"Stream: {detail['stream']}",
-                    "val_a": f"{detail['size_a']} bytes",
-                    "val_b": f"{detail['size_b']} bytes",
-                    "type": "binary_stream",
-                    "details": detail['analysis']
+                    "property": "Stream Details (truncated)",
+                    "val_a": f"+{len(stream_extra_diffs) - max_items} more",
+                    "val_b": "See stream summary",
+                    "type": "stream_detail",
                 })
 
         # If no visible differences found but content hashes differ, add generic marker
@@ -178,37 +204,62 @@ class ComponentDiff:
                 "details": "Binary content differs but no specific property changes detected",
             })
 
-    def _analyze_stream_difference(self, stream_name: str, data_a: Optional[bytes], data_b: Optional[bytes]) -> str:
-        """Analyze what's different between two binary streams."""
-        from .cfb_handler import parse_altium_params
-        import struct
+    def _is_schlib_item(self) -> bool:
+        """Infer whether compared items belong to a Schematic Library."""
+        if self.lib_type == "SchLib":
+            return True
+        if self.lib_type == "PcbLib":
+            return False
+        return hasattr(self.item_a, "pins") or hasattr(self.item_b, "pins")
 
+    def _analyze_stream_difference(
+        self, stream_name: str, data_a: Optional[bytes], data_b: Optional[bytes]
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """Analyze semantic and binary differences between two component streams."""
         if data_a is None:
-            return "Stream only exists in B"
+            return "Stream only exists in B", []
         if data_b is None:
-            return "Stream only exists in A"
+            return "Stream only exists in A", []
 
-        # Stream-specific analysis
+        sidecar_streams = (
+            "PinTextData",
+            "PinFrac",
+            "PinWideText",
+            "PinPackageLength",
+            "PinSymbolLineWidth",
+            "PinFunctionData",
+        )
+
         if stream_name == "Parameters":
-            return self._analyze_parameters_stream(data_a, data_b)
-        elif stream_name == "Header":
-            return self._analyze_header_stream(data_a, data_b)
-        elif stream_name == "Data":
+            return self._analyze_parameters_stream(data_a, data_b), []
+        if stream_name == "Header":
+            return self._analyze_header_stream(data_a, data_b), []
+        if stream_name == "Data":
             return self._analyze_data_stream(data_a, data_b)
-        elif stream_name == "UniqueIDPrimitiveInformation/Header":
-            return self._analyze_uid_header_stream(data_a, data_b)
-        elif stream_name == "UniqueIDPrimitiveInformation/Data":
-            return self._analyze_uid_data_stream(data_a, data_b)
-        elif stream_name == "WideStrings":
-            return self._analyze_widestrings_stream(data_a, data_b)
-        else:
-            # Generic binary difference
-            return self._analyze_binary_difference(data_a, data_b)
+        if stream_name in sidecar_streams:
+            return analyze_sch_pin_sidecar_diff(
+                stream_name,
+                data_a,
+                data_b,
+                self.meta_a,
+                self.meta_b,
+                getattr(self.item_a, "pins", None),
+                getattr(self.item_b, "pins", None),
+            )
+        if stream_name == "UniqueIDPrimitiveInformation/Header":
+            return self._analyze_count_header_stream(data_a, data_b, "UniqueID record count"), []
+        if stream_name == "PrimitiveGuids/Header":
+            return self._analyze_count_header_stream(data_a, data_b, "Primitive GUID count"), []
+        if stream_name == "UniqueIDPrimitiveInformation/Data":
+            return analyze_uid_data_diff(data_a, data_b), []
+        if stream_name == "PrimitiveGuids/Data":
+            return analyze_primitive_guids_diff(data_a, data_b), []
+        if stream_name == "WideStrings":
+            return analyze_pcb_widestrings_diff(data_a, data_b), []
+        return self._analyze_binary_difference(data_a, data_b), []
 
     def _analyze_parameters_stream(self, data_a: bytes, data_b: bytes) -> str:
         """Analyze Parameters stream differences."""
-        from .cfb_handler import parse_altium_params
-
         try:
             _, params_a = parse_altium_params(data_a, has_length_prefix=True)
             _, params_b = parse_altium_params(data_b, has_length_prefix=True)
@@ -224,97 +275,39 @@ class ComponentDiff:
 
             if diffs:
                 return "Parameter changes: " + "; ".join(diffs[:3]) + (f" +{len(diffs)-3} more" if len(diffs) > 3 else "")
-            else:
-                return "Parameters parsed but no differences found"
+            return "Parameters parsed but no differences found"
         except Exception as e:
             return f"Parameters differ (parse error: {str(e)[:50]})"
 
     def _analyze_header_stream(self, data_a: bytes, data_b: bytes) -> str:
         """Analyze Header stream differences."""
-        import struct
-
         if len(data_a) >= 4 and len(data_b) >= 4:
-            count_a = struct.unpack('<I', data_a[:4])[0]
-            count_b = struct.unpack('<I', data_b[:4])[0]
-
+            count_a = struct.unpack("<I", data_a[:4])[0]
+            count_b = struct.unpack("<I", data_b[:4])[0]
             if count_a != count_b:
                 return f"Primitive count: {count_a} → {count_b}"
-            else:
-                return f"Header differs but primitive count same ({count_a})"
-        else:
-            return f"Header size mismatch: {len(data_a)} vs {len(data_b)} bytes"
+            return f"Header differs but primitive count same ({count_a})"
+        return f"Header size mismatch: {len(data_a)} vs {len(data_b)} bytes"
 
-    def _analyze_data_stream(self, data_a: bytes, data_b: bytes) -> str:
-        """Analyze Data stream differences."""
-        # This is complex - just provide basic info
-        size_diff = len(data_b) - len(data_a)
-        percent = abs(size_diff) / max(len(data_a), 1) * 100
+    def _analyze_data_stream(self, data_a: bytes, data_b: bytes) -> Tuple[str, List[Dict[str, Any]]]:
+        """Decode and analyze SchLib or PcbLib 'Data' stream differences."""
+        try:
+            if self._is_schlib_item():
+                return analyze_sch_data_diff(data_a, data_b, self.meta_a, self.meta_b)
+            return analyze_pcb_data_diff(data_a, data_b, self.meta_a, self.meta_b)
+        except Exception as exc:
+            size_diff = len(data_b) - len(data_a)
+            return f"Data differs ({size_diff:+d} bytes; decode note: {str(exc)[:60]})", []
 
-        if size_diff > 0:
-            return f"Data increased by {size_diff} bytes ({percent:.1f}%)"
-        elif size_diff < 0:
-            return f"Data decreased by {abs(size_diff)} bytes ({percent:.1f}%)"
-        else:
-            # Same size but different content
-            # Find first difference
-            for i in range(len(data_a)):
-                if data_a[i] != data_b[i]:
-                    return f"Content differs starting at byte {i} (0x{data_a[i]:02X} → 0x{data_b[i]:02X})"
-            return "Data differs but couldn't identify location"
-
-    def _analyze_uid_header_stream(self, data_a: bytes, data_b: bytes) -> str:
-        """Analyze UniqueIDPrimitiveInformation/Header differences."""
-        import struct
-
+    def _analyze_count_header_stream(self, data_a: bytes, data_b: bytes, label: str = "Record count") -> str:
+        """Analyze 4-byte uint32 count header streams (UID/GUID headers)."""
         if len(data_a) >= 4 and len(data_b) >= 4:
-            count_a = struct.unpack('<I', data_a[:4])[0]
-            count_b = struct.unpack('<I', data_b[:4])[0]
-
+            count_a = struct.unpack("<I", data_a[:4])[0]
+            count_b = struct.unpack("<I", data_b[:4])[0]
             if count_a != count_b:
-                return f"UniqueID record count: {count_a} → {count_b}"
-            else:
-                return f"UID header differs but count same ({count_a})"
-        else:
-            return f"UID header size mismatch"
-
-    def _analyze_uid_data_stream(self, data_a: bytes, data_b: bytes) -> str:
-        """Analyze UniqueIDPrimitiveInformation/Data differences."""
-        # Count records
-        def count_records(data):
-            offset = 0
-            count = 0
-            while offset < len(data):
-                if offset + 4 > len(data):
-                    break
-                rec_len = struct.unpack('<I', data[offset:offset+4])[0]
-                offset += 4 + rec_len
-                count += 1
-            return count
-
-        try:
-            count_a = count_records(data_a)
-            count_b = count_records(data_b)
-
-            if count_a != count_b:
-                return f"UID records: {count_a} → {count_b}"
-            else:
-                return f"UID data differs (same record count: {count_a})"
-        except Exception:
-            return "UID data differs (couldn't parse)"
-
-    def _analyze_widestrings_stream(self, data_a: bytes, data_b: bytes) -> str:
-        """Analyze WideStrings stream differences."""
-        try:
-            # Try to decode as UTF-16
-            str_a = data_a.decode('utf-16le', errors='ignore').strip('\x00')
-            str_b = data_b.decode('utf-16le', errors='ignore').strip('\x00')
-
-            if str_a != str_b:
-                return f"Text: '{str_a[:30]}' → '{str_b[:30]}'"
-            else:
-                return "WideStrings differ but decoded text is same"
-        except Exception:
-            return f"WideStrings differ: {len(data_a)} → {len(data_b)} bytes"
+                return f"{label}: {count_a} → {count_b}"
+            return f"Header differs but {label.lower()} same ({count_a})"
+        return f"Header size mismatch: {len(data_a)} vs {len(data_b)} bytes"
 
     def _analyze_binary_difference(self, data_a: bytes, data_b: bytes) -> str:
         """Generic binary difference analysis."""
@@ -402,11 +395,15 @@ class LibraryDiffEngine:
 
             if in_a and not in_b:
                 orig_name = map_a[k]
-                cd = ComponentDiff(orig_name, DiffStatus.ADDED_A, item_a=comps_a[orig_name])
+                cd = ComponentDiff(
+                    orig_name, DiffStatus.ADDED_A, item_a=comps_a[orig_name], lib_type=lib_type, meta_a=meta_a, meta_b=meta_b
+                )
                 counts["added_a"] += 1
             elif in_b and not in_a:
                 orig_name = map_b[k]
-                cd = ComponentDiff(orig_name, DiffStatus.ADDED_B, item_b=comps_b[orig_name])
+                cd = ComponentDiff(
+                    orig_name, DiffStatus.ADDED_B, item_b=comps_b[orig_name], lib_type=lib_type, meta_a=meta_a, meta_b=meta_b
+                )
                 counts["added_b"] += 1
             else:
                 orig_name_a = map_a[k]
@@ -418,10 +415,14 @@ class LibraryDiffEngine:
                 desc_a = getattr(item_a, "description", "")
                 desc_b = getattr(item_b, "description", "")
                 if item_a.content_hash == item_b.content_hash and desc_a == desc_b and orig_name_a == orig_name_b:
-                    cd = ComponentDiff(display_name, DiffStatus.IDENTICAL, item_a=item_a, item_b=item_b)
+                    cd = ComponentDiff(
+                        display_name, DiffStatus.IDENTICAL, item_a=item_a, item_b=item_b, lib_type=lib_type, meta_a=meta_a, meta_b=meta_b
+                    )
                     counts["identical"] += 1
                 else:
-                    cd = ComponentDiff(display_name, DiffStatus.CONFLICT, item_a=item_a, item_b=item_b)
+                    cd = ComponentDiff(
+                        display_name, DiffStatus.CONFLICT, item_a=item_a, item_b=item_b, lib_type=lib_type, meta_a=meta_a, meta_b=meta_b
+                    )
                     if orig_name_a != orig_name_b:
                         cd.property_diffs.insert(0, {
                             "property": "Name Casing",

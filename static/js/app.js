@@ -571,15 +571,26 @@ document.addEventListener("DOMContentLoaded", () => {
         // Add property diffs to the parameters table for visibility
         if (item.property_diffs && item.property_diffs.length > 0) {
             const headerRow = document.createElement("tr");
-            headerRow.innerHTML = `<td colspan="3" style="padding-top: 1rem;"><strong>Detected Differences:</strong></td>`;
+            headerRow.innerHTML = `<td colspan="3" style="padding-top: 1rem;"><strong>Detected Differences & Extracted Stream Details:</strong></td>`;
             modalParamsTbody.appendChild(headerRow);
 
             item.property_diffs.forEach((diff) => {
                 const tr = document.createElement("tr");
-                tr.className = "diff-highlight";
-                const detailsText = diff.details ? `<div class="text-xs text-muted" style="margin-top: 0.25rem;">${escapeHtml(diff.details)}</div>` : "";
+                tr.className = diff.type === "stream_detail" ? "diff-highlight diff-stream-item" : "diff-highlight";
+
+                let detailsHtml = "";
+                if (diff.details) {
+                    const parts = String(diff.details).split(" | ").filter(Boolean);
+                    if (parts.length > 1) {
+                        detailsHtml = `<ul class="diff-details-list">${parts.map((p) => `<li>${escapeHtml(p)}</li>`).join("")}</ul>`;
+                    } else {
+                        detailsHtml = `<div class="text-xs text-muted diff-detail-single">${escapeHtml(diff.details)}</div>`;
+                    }
+                }
+
+                const badgeHtml = diff.type === "stream_detail" ? `<span class="diff-sub-tag">Decoded</span> ` : "";
                 tr.innerHTML = `
-                    <td><strong>${escapeHtml(diff.property)}</strong>${detailsText}</td>
+                    <td>${badgeHtml}<strong>${escapeHtml(diff.property)}</strong>${detailsHtml}</td>
                     <td>${escapeHtml(String(diff.val_a))}</td>
                     <td>${escapeHtml(String(diff.val_b))}</td>
                 `;

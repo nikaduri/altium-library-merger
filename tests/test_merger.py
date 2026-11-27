@@ -263,6 +263,148 @@ class TestAltiumMerger(unittest.TestCase):
 
         print(f"Symmetry test passed: Total={counts_ab['total']}, Identical={counts_ab['identical']}, Conflicts={counts_ab['conflicts']}")
 
+    def test_07_schlib_stream_extraction(self):
+        """Verify deep semantic extraction of SchLib Data, binary pins, PinTextData, and PinFrac streams."""
+        import struct
+        import zlib
+        from altium_engine.binary_inspector import (
+            parse_sch_binary_pin,
+            parse_sch_pin_sidecar,
+            analyze_sch_data_diff,
+            analyze_sch_pin_sidecar_diff,
+        )
+
+        # 1. Verify binary pin decoder handles non-empty descriptions accurately
+        desc = b"PWR"
+        pin_body = (
+            struct.pack("<I", 2)
+            + b"\x00"
+            + struct.pack("<h", 1)
+            + b"\x00\x00\x00\x00\x00"
+            + bytes([len(desc)]) + desc
+            + bytes([1, 4, 0x33])
+            + struct.pack("<HhhI", 20, -15, -5, 0)
+            + b"\x03VDD\x011\x00\x00\x00"
+        )
+        parsed_pin = parse_sch_binary_pin(pin_body)
+        self.assertEqual(parsed_pin["description"], "PWR")
+        self.assertEqual(parsed_pin["electrical"], "Passive")
+        self.assertEqual(parsed_pin["name"], "VDD")
+        self.assertEqual(parsed_pin["designator"], "1")
+        self.assertEqual((parsed_pin["x"], parsed_pin["y"], parsed_pin["length"]), (-15, -5, 20))
+
+        # 2. Verify Data stream diff ignores IndexInSheet shifts and reports real changes
+        def pack_text_rec(text: str) -> bytes:
+            raw = text.encode("windows-1252") + b"\x00"
+            return struct.pack("<HH", len(raw), 0) + raw
+
+        data_a = (
+            pack_text_rec("|RECORD=1|LibReference=TEST_PART|PartCount=2")
+            + pack_text_rec("|RECORD=41|IndexInSheet=0|Name=sample link|FontID=3|Text=https://example.com")
+            + pack_text_rec("|RECORD=41|IndexInSheet=1|Name=unit price|FontID=1|Text=$ 0.9375")
+            + pack_text_rec("|RECORD=6|IndexInSheet=2|LocationCount=2|X1=0|Y1=0|X2=10|Y2=10")
+            + pack_text_rec("|RECORD=44")
+            + pack_text_rec("|RECORD=45|OwnerIndex=4|ModelName=FP_ALPHA|ModelType=PCBLIB")
+        )
+        data_b = (
+            pack_text_rec("|RECORD=1|LibReference=TEST_PART|PartCount=2")
+            + pack_text_rec("|RECORD=41|IndexInSheet=0|Name=sample link|FontID=2|Text=https://example.com")
+            + pack_text_rec("|RECORD=6|IndexInSheet=1|LocationCount=2|X1=0|Y1=0|X2=10|Y2=10")
+            + pack_text_rec("|RECORD=44")
+            + pack_text_rec("|RECORD=45|OwnerIndex=3|ModelName=FP_BETA|ModelType=PCBLIB")
+        )
+        meta_a = {"fonts": [{"id": 3, "name": "Times New Roman", "size": "10", "underline": "T"}, {"id": 4, "name": "Times New Roman", "size": "5"}]}
+        meta_b = {"fonts": [{"id": 2, "name": "Times New Roman", "size": "10", "underline": "T"}, {"id": 3, "name": "Times New Roman", "size": "5"}]}
+
+        summary, extra = analyze_sch_data_diff(data_a, data_b, meta_a, meta_b)
+        self.assertIn("Removed Parameter 'unit price'", summary)
+        self.assertIn("Font #3 (Times New Roman 10pt Underline)", summary)
+        self.assertIn("Font #2 (Times New Roman 10pt Underline)", summary)
+        self.assertIn("FP_ALPHA", summary)
+        self.assertIn("FP_BETA", summary)
+        self.assertGreaterEqual(len(extra), 2)
+
+        # 3. Verify PinTextData zlib decoding resolves FontIDs cleanly
+        def make_ptd(font_id: int) -> bytes:
+            hdr = b"|HEADER=PinTextData|Weight=1\x00"
+            payload = struct.pack("<BHI", 0x10, font_id, 0) * 2
+            comp_z = zlib.compress(payload)
+            entry_body = b"\xD0\x010" + struct.pack("<I", len(comp_z)) + comp_z
+            return struct.pack("<I", len(hdr)) + hdr + struct.pack("<HH", len(entry_body), 0x0100) + entry_body
+
+        ptd_summary, ptd_extra = analyze_sch_pin_sidecar_diff(
+            "PinTextData",
+            make_ptd(4),
+            make_ptd(3),
+            meta_a,
+            meta_b,
+            [{"designator": "1"}],
+            [{"designator": "1"}],
+        )
+        self.assertIn("Font #4 (Times New Roman 5pt)", ptd_summary)
+        self.assertIn("Font #3 (Times New Roman 5pt)", ptd_summary)
+        self.assertEqual(len(ptd_extra), 1)
+
+        # 4. Verify PinFrac sidecar parsing
+        pf_hdr = b"|HEADER=PinFrac|Weight=1\x00"
+        pf_z = zlib.compress(struct.pack("<iii", -31496, 31496, 68504))
+        pf_body = b"\xD0\x010" + struct.pack("<I", len(pf_z)) + pf_z
+        pf_stream = struct.pack("<I", len(pf_hdr)) + pf_hdr + struct.pack("<HH", len(pf_body), 0x0100) + pf_body
+        parsed_pf = parse_sch_pin_sidecar("PinFrac", pf_stream)
+        self.assertEqual(parsed_pf["entries"]["0"]["x_frac"], -31496)
+
+    def test_08_pcblib_stream_extraction(self):
+        """Verify PcbLib Data, WideStrings, UniqueID, and PrimitiveGuids stream extraction."""
+        import struct
+        from altium_engine.binary_inspector import (
+            parse_pcb_data_records,
+            analyze_pcb_data_diff,
+            analyze_pcb_widestrings_diff,
+            analyze_uid_data_diff,
+            analyze_primitive_guids_diff,
+        )
+
+        # 1. Parse all footprints in sample.PcbLib cleanly
+        _, fps, meta = PcbLibMerger.load_library(self.sample_pcb)
+        unknowns = 0
+        for fp in fps.values():
+            recs = parse_pcb_data_records(fp.raw_streams.get("Data", b""), meta)
+            unknowns += sum(1 for r in recs if r["type"].startswith("Record("))
+        self.assertEqual(unknowns, 0)
+
+        # 2. Verify PcbLib Data track diff + pad diff detection
+        first_fp = fps["RPI2"]
+        d_orig = first_fp.raw_streams["Data"]
+        recs_orig = parse_pcb_data_records(d_orig, meta)
+        # Synthesize a modified Data stream by appending a new Track (rid=4) before EOF
+        track_common = bytes([33, 0, 0]) + b"\xff" * 10  # Layer 33 (Top Overlay)
+        track_body = track_common + struct.pack("<iiiii", 0, 0, 1000000, 1000000, 100000)
+        d_mod = d_orig + bytes([4]) + struct.pack("<I", len(track_body)) + track_body
+        pcb_sum, pcb_extra = analyze_pcb_data_diff(d_orig, d_mod, meta, meta)
+        self.assertIn("Added 1 Track", pcb_sum)
+        self.assertIn("Top Overlay", pcb_sum)
+        self.assertTrue(any("Tracks / Graphics" in e["property"] for e in pcb_extra))
+        self.assertGreater(len(recs_orig), 10)
+
+        # 3. Verify WideStrings decoding
+        ws_a = b"|ENCODEDTEXT0=82,80,73\x00"
+        ws_b = b"|ENCODEDTEXT0=71,80,73,79\x00"
+        ws_a_blk = struct.pack("<I", len(ws_a)) + ws_a
+        ws_b_blk = struct.pack("<I", len(ws_b)) + ws_b
+        ws_diff = analyze_pcb_widestrings_diff(ws_a_blk, ws_b_blk)
+        self.assertIn("'RPI' → 'GPIO'", ws_diff)
+
+        # 4. Verify UID & PrimitiveGuids analyzers
+        u1 = b"|PRIMITIVEINDEX=0|PRIMITIVEOBJECTID=Pad|UNIQUEID=AAAAAAAA\x00"
+        u2 = b"|PRIMITIVEINDEX=0|PRIMITIVEOBJECTID=Pad|UNIQUEID=BBBBBBBB\x00"
+        uid_diff = analyze_uid_data_diff(struct.pack("<I", len(u1)) + u1, struct.pack("<I", len(u2)) + u2)
+        self.assertIn("1 primitive UIDs: 1 regenerated", uid_diff)
+
+        g1 = struct.pack("<II", 2, 0) + b"\x01" * 16
+        g2 = struct.pack("<II", 2, 0) + b"\x02" * 16
+        guid_diff = analyze_primitive_guids_diff(g1, g2)
+        self.assertIn("1 primitive GUIDs (1 regenerated)", guid_diff)
+
 
 if __name__ == "__main__":
     unittest.main()

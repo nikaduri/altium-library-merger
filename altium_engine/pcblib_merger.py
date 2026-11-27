@@ -245,97 +245,18 @@ class PcbLibMerger:
     @classmethod
     def _parse_footprint_data(cls, fp: PcbFootprintInfo, data: bytes) -> None:
         """Scan Data stream for pads and 3D component body records."""
-        offset = 0
-        if len(data) < 4:
-            return
+        from .binary_inspector import parse_pcb_data_records
 
-        # Skip initial string block (the footprint name)
-        try:
-            initial_block_len = struct.unpack('<I', data[:4])[0]
-            offset = 4 + initial_block_len
-        except Exception:
-            offset = 0
-
-        pad_count = 0
-        has_3d = False
-
-        while offset < len(data):
-            rec_id = data[offset]
-            offset += 1
-
-            if rec_id == 0:  # End of records
-                break
-            elif rec_id == 2:  # PcbPad
-                pad_count += 1
-                if offset + 4 <= len(data):
-                    blen = struct.unpack('<I', data[offset:offset + 4])[0]
-                    offset += 4 + blen
-            elif rec_id == 12:  # PcbComponentBody (3D Model)
-                has_3d = True
-                if offset + 4 <= len(data):
-                    blen = struct.unpack('<I', data[offset:offset + 4])[0]
-                    offset += 4 + blen
-                    # Advance past trailing block
-                    if offset + 4 <= len(data):
-                        tblen = struct.unpack('<I', data[offset:offset + 4])[0]
-                        offset += 4 + tblen
-            else:
-                # Other records: read block length and skip
-                if offset + 4 <= len(data):
-                    blen = struct.unpack('<I', data[offset:offset + 4])[0]
-                    offset += 4 + blen
-                else:
-                    break
-
-        fp.pad_count = pad_count
-        fp.has_3d_model = has_3d
+        records = parse_pcb_data_records(data)
+        fp.pad_count = sum(1 for r in records if r["rid"] == 2)
+        fp.has_3d_model = any(r["rid"] == 12 for r in records)
 
     @classmethod
     def _count_primitives_in_data(cls, data: bytes) -> int:
         """Count the actual number of primitive records in a footprint Data stream."""
-        offset = 0
-        if len(data) < 4:
-            return 0
+        from .binary_inspector import parse_pcb_data_records
 
-        # Skip initial string block (the footprint name)
-        try:
-            initial_block_len = struct.unpack('<I', data[:4])[0]
-            offset = 4 + initial_block_len
-        except Exception:
-            return 0
-
-        primitive_count = 0
-
-        while offset < len(data):
-            if offset >= len(data):
-                break
-
-            rec_id = data[offset]
-            offset += 1
-
-            if rec_id == 0:  # End of records
-                break
-
-            primitive_count += 1
-
-            # Read and skip the record body
-            if rec_id == 12:  # PcbComponentBody has special structure
-                if offset + 4 <= len(data):
-                    blen = struct.unpack('<I', data[offset:offset + 4])[0]
-                    offset += 4 + blen
-                    # Advance past trailing block
-                    if offset + 4 <= len(data):
-                        tblen = struct.unpack('<I', data[offset:offset + 4])[0]
-                        offset += 4 + tblen
-            else:
-                # Standard record: ID + 4-byte length + body
-                if offset + 4 <= len(data):
-                    blen = struct.unpack('<I', data[offset:offset + 4])[0]
-                    offset += 4 + blen
-                else:
-                    break
-
-        return primitive_count
+        return len(parse_pcb_data_records(data))
 
     @classmethod
     def _count_uid_records(cls, data: bytes) -> int:

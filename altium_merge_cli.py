@@ -85,7 +85,13 @@ def cmd_diff(args: argparse.Namespace) -> int:
         elif status == DiffStatus.CONFLICT.value:
             badge = f"{RED}[CONFLICT]{RESET}"
             pdiffs = item.get("property_diffs", [])
-            diff_summary = ", ".join(f"{d['property']}: '{d['val_a']}' vs '{d['val_b']}'" for d in pdiffs[:2])
+            summary_parts = []
+            for d in pdiffs[:2]:
+                if d.get("details") and d.get("type") == "binary_stream":
+                    summary_parts.append(f"{d['property']} ({d['details']})")
+                else:
+                    summary_parts.append(f"{d['property']}: '{d['val_a']}' vs '{d['val_b']}'")
+            diff_summary = ", ".join(summary_parts)
             if len(pdiffs) > 2:
                 diff_summary += f" (+{len(pdiffs)-2} more)"
             print(f"{badge:<24} {BOLD}{name:<40}{RESET} {diff_summary}")
@@ -132,6 +138,8 @@ def cmd_merge(args: argparse.Namespace) -> int:
             print(f"--- [{i}/{len(conflicts)}] Conflict: {BOLD}{name}{RESET} ---")
             for d in pdiffs:
                 print(f"    {d['property']}: [A] '{d['val_a']}'  <-->  [B] '{d['val_b']}'")
+                if d.get("details"):
+                    print(f"        -> {d['details']}")
 
             while True:
                 choice = input("  Choice: [A] Keep Mine, [B] Keep Theirs, [K] Keep Both (rename B), [S] Skip: ").strip().lower()

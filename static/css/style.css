@@ -884,6 +884,8 @@ code {
     padding: 0.5rem 0.75rem;
     border: 1px solid var(--border-subtle);
     text-align: left;
+    vertical-align: top;
+    word-break: break-word;
 }
 
 .params-table th {
@@ -894,6 +896,42 @@ code {
 .diff-highlight {
     background: rgba(248, 81, 73, 0.12);
     color: #ff9b9b;
+}
+
+.diff-stream-item {
+    background: rgba(56, 139, 253, 0.08);
+    color: #c9e1ff;
+}
+
+.diff-sub-tag {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    background: rgba(56, 139, 253, 0.25);
+    color: var(--accent-blue);
+    margin-right: 0.35rem;
+    vertical-align: middle;
+}
+
+.diff-detail-single {
+    margin-top: 0.25rem;
+    line-height: 1.4;
+}
+
+.diff-details-list {
+    margin: 0.35rem 0 0 1.1rem;
+    padding: 0;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+}
+
+.diff-details-list li {
+    margin-bottom: 0.2rem;
 }
 
 .code-block {
